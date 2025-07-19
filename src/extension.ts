@@ -167,37 +167,7 @@ async function compareWithRevision(uri?: vscode.Uri) {
 
         await openDiffView(oldUri, newUri, title, workspaceFolder, currentLine);
     } catch (error) {
-        vscode.window.showErrorMessage(`Error: ${error}`);
-    }
-}
-
-async function compareWithHash(uri?: vscode.Uri) {
-    const context = await getFileContext(uri);
-    if (!context) return;
-
-    const { filePath, workspaceFolder } = context;
-
-    try {
-        const hash = (await vscode.env.clipboard.readText()).trim();
-        if (!hash) {
-            vscode.window.showErrorMessage('Clipboard is empty');
-            return;
-        }
-
-        // Capture current cursor position
-        const editor = vscode.window.activeTextEditor;
-        const currentLine = editor?.document.fileName === filePath
-            ? editor.selection.active.line
-            : undefined;
-
-        const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
-        const oldUri = createGitUri(relativePath, hash);
-        const newUri = vscode.Uri.file(filePath);
-        const title = `${path.basename(filePath)} (${hash.substring(0, 7)}) ↔ ${path.basename(filePath)} (Working Tree)`;
-
-        await openDiffView(oldUri, newUri, title, workspaceFolder, currentLine);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Error: ${error}`);
+        vscode.window.showErrorMessage(`${error}`);
     }
 }
 
@@ -227,14 +197,13 @@ async function openRemote(uri?: vscode.Uri) {
         const fileUrl = constructFileUrl(webUrl, branch, relativePath, lineNumber);
         await vscode.env.openExternal(vscode.Uri.parse(fileUrl));
     } catch (error) {
-        vscode.window.showErrorMessage(`Error: ${error}`);
+        vscode.window.showErrorMessage(`${error}`);
     }
 }
 
 export function activate(context: vscode.ExtensionContext) {
     const commands = [
         vscode.commands.registerCommand('lightGit.compareWithRevision', compareWithRevision),
-        vscode.commands.registerCommand('lightGit.compareWithHash', compareWithHash),
         vscode.commands.registerCommand('lightGit.openRemote', openRemote)
     ];
 

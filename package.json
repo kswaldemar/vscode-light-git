@@ -23,11 +23,6 @@
         "category": "Light Git"
       },
       {
-        "command": "lightGit.compareWithHash",
-        "title": "Compare with Hash",
-        "category": "Light Git"
-      },
-      {
         "command": "lightGit.openRemote",
         "title": "Open in Remote",
         "category": "Light Git"
