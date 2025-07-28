@@ -201,10 +201,38 @@ async function openRemote(uri?: vscode.Uri) {
     }
 }
 
+async function openRemoteMain(uri?: vscode.Uri) {
+    const context = await getFileContext(uri);
+    if (!context) return;
+
+    const { filePath, workspaceFolder } = context;
+
+    try {
+        const { stdout: remoteUrl } = await execAsync('git config --get remote.origin.url', {
+            cwd: workspaceFolder.uri.fsPath
+        });
+
+        const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
+        const webUrl = normalizeRemoteUrl(remoteUrl.trim());
+
+        // Get line number if in editor
+        const editor = vscode.window.activeTextEditor;
+        const lineNumber = editor?.document.fileName === filePath
+            ? editor.selection.active.line + 1
+            : undefined;
+
+        const fileUrl = constructFileUrl(webUrl, 'main', relativePath, lineNumber);
+        await vscode.env.openExternal(vscode.Uri.parse(fileUrl));
+    } catch (error) {
+        vscode.window.showErrorMessage(`${error}`);
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     const commands = [
         vscode.commands.registerCommand('lightGit.compareWithRevision', compareWithRevision),
-        vscode.commands.registerCommand('lightGit.openRemote', openRemote)
+        vscode.commands.registerCommand('lightGit.openRemote', openRemote),
+        vscode.commands.registerCommand('lightGit.openRemoteMain', openRemoteMain)
     ];
 
     context.subscriptions.push(...commands);

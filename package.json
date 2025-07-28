@@ -26,6 +26,11 @@
         "command": "lightGit.openRemote",
         "title": "Open in Remote",
         "category": "Light Git"
+      },
+      {
+        "command": "lightGit.openRemoteMain",
+        "title": "Open in Remote (main)",
+        "category": "Light Git"
       }
     ],
     "menus": {
@@ -36,12 +41,12 @@
           "group": "7_modification"
         },
         {
-          "command": "lightGit.compareWithHash",
+          "command": "lightGit.openRemote",
           "when": "!explorerResourceIsFolder",
           "group": "7_modification"
         },
         {
-          "command": "lightGit.openRemote",
+          "command": "lightGit.openRemoteMain",
           "when": "!explorerResourceIsFolder",
           "group": "7_modification"
         }
@@ -52,7 +57,7 @@
           "group": "7_modification"
         },
         {
-          "command": "lightGit.compareWithHash",
+          "command": "lightGit.openRemoteMain",
           "group": "7_modification"
         },
         {
