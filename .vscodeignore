@@ -11,4 +11,9 @@ vsc-extension-quickstart.md
 node_modules/**
 .DS_Store
 *.vsix
+.direnv/**
+flake.nix
+flake.lock
+.envrc
+.claude/**
 
