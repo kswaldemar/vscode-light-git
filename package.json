@@ -33,13 +33,8 @@
         "category": "Light Git"
       },
       {
-        "command": "lightGit.showFileHistory",
-        "title": "Show File History",
-        "category": "Light Git"
-      },
-      {
-        "command": "lightGit.showSelectionHistory",
-        "title": "Show Selection History",
+        "command": "lightGit.copyLineRangePath",
+        "title": "Copy Line Range + Path",
         "category": "Light Git"
       }
     ],
@@ -72,6 +67,10 @@
         },
         {
           "command": "lightGit.openRemote",
+          "group": "7_modification"
+        },
+        {
+          "command": "lightGit.copyLineRangePath",
           "group": "7_modification"
         }
       ]

@@ -6,6 +6,7 @@ Lightweight VS Code extension for essential git operations without the bloat.
 
 - **Compare with Revision**: Right-click any file → "Compare with Revision" → select from recent commits → opens diff view
 - **Open in Remote**: Right-click any file → "Open in Remote" → opens browser with GitHub/GitLab/Bitbucket link (includes line numbers)
+- **Copy Line Range + Path**: Select code in editor → run command palette "Copy Line Range + Path" (or context menu) → copies `-Lstart,end:relative/path` to clipboard
 
 ## Usage
 
@@ -20,6 +21,14 @@ Lightweight VS Code extension for essential git operations without the bloat.
 2. Select "Open in Remote"
 3. Browser opens to the file on GitHub/GitLab/Bitbucket
 4. If cursor is positioned in editor, line number is included in URL
+
+### Copy Line Range + Path (for git -L or tooling)
+1. Select any text (or place cursor on a line) in the editor
+2. Run command: `Light Git: Copy Line Range + Path` (Command Palette or editor context menu)
+3. Clipboard receives: `-L<N>,<M>:relative/path/to/file`
+	- If no selection: `N == M` (single line)
+	- If selection ends at column 0 of next line, end line auto-adjusts to previous line
+4. Paste into git commands like: `git log -L <copied-fragment>`
 
 ## Supported Git Hosts
 

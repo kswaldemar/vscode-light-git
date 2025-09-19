@@ -132,46 +132,6 @@ async function selectRevision(branches: string[]) {
     });
 }
 
-async function selectCommitFromHistory(commits: string[], action: string) {
-    const items = commits.map(commit => {
-        const parts = commit.split('|');
-        const hash = parts[0];
-        const date = parts[1];
-        const message = parts[2];
-        const author = parts[3];
-        
-        return {
-            label: `$(git-commit) ${hash}`,
-            description: message,
-            detail: `${author} • ${date}`,
-            hash: hash
-        };
-    });
-
-    const quickPick = vscode.window.createQuickPick();
-    quickPick.items = items;
-    quickPick.placeholder = `Select a commit to ${action}`;
-    quickPick.canSelectMany = false;
-
-    return new Promise<{hash: string} | undefined>((resolve) => {
-        quickPick.onDidAccept(() => {
-            const selected = quickPick.selectedItems[0];
-            if (selected) {
-                const originalItem = items.find(item => item.label === selected.label);
-                resolve(originalItem);
-            }
-            quickPick.dispose();
-        });
-
-        quickPick.onDidHide(() => {
-            resolve(undefined);
-            quickPick.dispose();
-        });
-
-        quickPick.show();
-    });
-}
-
 // Command implementations
 async function compareWithRevision(uri?: vscode.Uri) {
     const context = await getFileContext(uri);
@@ -268,83 +228,37 @@ async function openRemoteMain(uri?: vscode.Uri) {
     }
 }
 
-async function showFileHistory(uri?: vscode.Uri) {
-    const context = await getFileContext(uri);
-    if (!context) return;
-
-    const { filePath, workspaceFolder } = context;
-
-    try {
-        const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
-        const { stdout } = await execAsync(
-            `git log --pretty=format:"%h|%ad|%s|%an" --date=short -- "${relativePath}"`,
-            { cwd: workspaceFolder.uri.fsPath }
-        );
-
-        const commits = stdout.trim().split('\n').filter(line => line.trim());
-        if (commits.length === 0) {
-            vscode.window.showInformationMessage('No commit history found for this file');
-            return;
-        }
-
-        const selectedCommit = await selectCommitFromHistory(commits, 'compare with current file');
-        if (!selectedCommit) return;
-
-        const oldUri = createGitUri(relativePath, selectedCommit.hash);
-        const newUri = vscode.Uri.file(filePath);
-        const title = `${path.basename(filePath)} (${selectedCommit.hash}) ↔ ${path.basename(filePath)} (Working Tree)`;
-
-        await openDiffView(oldUri, newUri, title, workspaceFolder);
-    } catch (error) {
-        vscode.window.showErrorMessage(`${error}`);
-    }
-}
-
-async function showSelectionHistory(uri?: vscode.Uri) {
+async function copyLineRangePath() {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
         vscode.window.showErrorMessage('No active editor');
         return;
     }
-
-    const context = await getFileContext(uri);
-    if (!context) return;
-
-    const { filePath, workspaceFolder } = context;
+    const document = editor.document;
     const selection = editor.selection;
-    
+
+    let startLine = selection.start.line + 1;
+    let endLine = selection.end.line + 1;
+
     if (selection.isEmpty) {
-        vscode.window.showErrorMessage('No text selected');
+        endLine = startLine;
+    } else if (selection.end.character === 0) {
+        endLine = Math.max(startLine, endLine - 1);
+    }
+
+    if (startLine > endLine) {
+        [startLine, endLine] = [endLine, startLine];
+    }
+
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!workspaceFolder) {
+        vscode.window.showErrorMessage('File is not in a workspace');
         return;
     }
 
-    const startLine = selection.start.line + 1;
-    const endLine = selection.end.line + 1;
-
-    try {
-        const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
-        const { stdout } = await execAsync(
-            `git log --pretty=format:"%h|%ad|%s|%an" --date=short -L ${startLine},${endLine}:"${relativePath}"`,
-            { cwd: workspaceFolder.uri.fsPath }
-        );
-
-        const commits = stdout.trim().split('\n').filter(line => line.trim() && line.includes('|'));
-        if (commits.length === 0) {
-            vscode.window.showInformationMessage('No commit history found for the selected lines');
-            return;
-        }
-
-        const selectedCommit = await selectCommitFromHistory(commits, 'compare selection with commit');
-        if (!selectedCommit) return;
-
-        const oldUri = createGitUri(relativePath, selectedCommit.hash);
-        const newUri = vscode.Uri.file(filePath);
-        const title = `${path.basename(filePath)} (${selectedCommit.hash}) ↔ ${path.basename(filePath)} (Working Tree)`;
-
-        await openDiffView(oldUri, newUri, title, workspaceFolder, startLine - 1);
-    } catch (error) {
-        vscode.window.showErrorMessage(`${error}`);
-    }
+    const relativePath = path.relative(workspaceFolder.uri.fsPath, document.fileName);
+    const rangeSpec = `-L${startLine},${endLine}:${relativePath}`;
+    await vscode.env.clipboard.writeText(rangeSpec);
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -352,8 +266,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('lightGit.compareWithRevision', compareWithRevision),
         vscode.commands.registerCommand('lightGit.openRemote', openRemote),
         vscode.commands.registerCommand('lightGit.openRemoteMain', openRemoteMain),
-        vscode.commands.registerCommand('lightGit.showFileHistory', showFileHistory),
-        vscode.commands.registerCommand('lightGit.showSelectionHistory', showSelectionHistory)
+        vscode.commands.registerCommand('lightGit.copyLineRangePath', copyLineRangePath)
     ];
 
     context.subscriptions.push(...commands);
