@@ -2,7 +2,7 @@
   "name": "vscode-light-git",
   "displayName": "Light Git",
   "description": "Lightweight git tools for file comparison and remote links",
-  "version": "1.1.0",
+  "version": "1.3.0",
   "publisher": "kswaldemar",
   "engines": {
     "vscode": "^1.74.0"
@@ -67,10 +67,6 @@
         },
         {
           "command": "lightGit.openRemote",
-          "group": "7_modification"
-        },
-        {
-          "command": "lightGit.copyLineRangePath",
           "group": "7_modification"
         }
       ]
