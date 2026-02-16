@@ -75,12 +75,15 @@ function normalizeRemoteUrl(remoteUrl: string): string {
     return webUrl.replace(/\.git$/, '');
 }
 
-function constructFileUrl(webUrl: string, branch: string, relativePath: string, lineNumber?: number): string {
+function constructFileUrl(webUrl: string, branch: string, relativePath: string, lineNumber?: number, endLineNumber?: number): string {
     let fileUrl: string;
 
     if (webUrl.includes('github.com')) {
         fileUrl = `${webUrl}/blob/${branch}/${relativePath}`;
-        if (lineNumber) fileUrl += `#L${lineNumber}`;
+        if (lineNumber) {
+            fileUrl += `#L${lineNumber}`;
+            if (endLineNumber && endLineNumber !== lineNumber) fileUrl += `-L${endLineNumber}`;
+        }
     } else if (webUrl.includes('gitlab.com')) {
         fileUrl = `${webUrl}/-/blob/${branch}/${relativePath}`;
         if (lineNumber) fileUrl += `#L${lineNumber}`;
@@ -188,13 +191,18 @@ async function openRemote(uri?: vscode.Uri) {
         const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
         const webUrl = normalizeRemoteUrl(remoteUrl);
 
-        // Get line number if in editor
+        // Get line range if in editor
         const editor = vscode.window.activeTextEditor;
-        const lineNumber = editor?.document.fileName === filePath
-            ? editor.selection.active.line + 1
-            : undefined;
+        let startLine: number | undefined;
+        let endLine: number | undefined;
+        if (editor?.document.fileName === filePath) {
+            startLine = editor.selection.start.line + 1;
+            endLine = editor.selection.end.line + 1;
+            if (editor.selection.isEmpty) endLine = startLine;
+            else if (editor.selection.end.character === 0) endLine = Math.max(startLine, endLine - 1);
+        }
 
-        const fileUrl = constructFileUrl(webUrl, branch, relativePath, lineNumber);
+        const fileUrl = constructFileUrl(webUrl, branch, relativePath, startLine, endLine);
         await vscode.env.openExternal(vscode.Uri.parse(fileUrl));
     } catch (error) {
         vscode.window.showErrorMessage(`${error}`);
@@ -215,13 +223,18 @@ async function openRemoteMain(uri?: vscode.Uri) {
         const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
         const webUrl = normalizeRemoteUrl(remoteUrl.trim());
 
-        // Get line number if in editor
+        // Get line range if in editor
         const editor = vscode.window.activeTextEditor;
-        const lineNumber = editor?.document.fileName === filePath
-            ? editor.selection.active.line + 1
-            : undefined;
+        let startLine: number | undefined;
+        let endLine: number | undefined;
+        if (editor?.document.fileName === filePath) {
+            startLine = editor.selection.start.line + 1;
+            endLine = editor.selection.end.line + 1;
+            if (editor.selection.isEmpty) endLine = startLine;
+            else if (editor.selection.end.character === 0) endLine = Math.max(startLine, endLine - 1);
+        }
 
-        const fileUrl = constructFileUrl(webUrl, 'main', relativePath, lineNumber);
+        const fileUrl = constructFileUrl(webUrl, 'main', relativePath, startLine, endLine);
         await vscode.env.openExternal(vscode.Uri.parse(fileUrl));
     } catch (error) {
         vscode.window.showErrorMessage(`${error}`);
