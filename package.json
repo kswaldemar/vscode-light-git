@@ -2,7 +2,7 @@
   "name": "vscode-light-git",
   "displayName": "Light Git",
   "description": "Lightweight git tools for file comparison and remote links",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "kswaldemar",
   "engines": {
     "vscode": "^1.74.0"
@@ -36,9 +36,47 @@
         "command": "lightGit.copyLineRangePath",
         "title": "Copy Line Range + Path",
         "category": "Light Git"
+      },
+      {
+        "command": "lightGit.openMergeBaseDiff",
+        "title": "Open Merge-base Diff",
+        "category": "Light Git"
+      },
+      {
+        "command": "lightGit.refreshMergeBaseChanges",
+        "title": "Refresh",
+        "category": "Light Git",
+        "icon": "$(refresh)"
       }
     ],
+    "views": {
+      "scm": [
+        {
+          "id": "lightGit.mergeBaseChanges",
+          "name": "Branch Changes (vs main)",
+          "icon": "$(git-pull-request)",
+          "contextualTitle": "Light Git"
+        }
+      ]
+    },
     "menus": {
+      "view/title": [
+        {
+          "command": "lightGit.refreshMergeBaseChanges",
+          "when": "view == lightGit.mergeBaseChanges",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "lightGit.openMergeBaseDiff",
+          "when": "false"
+        },
+        {
+          "command": "lightGit.refreshMergeBaseChanges",
+          "when": "false"
+        }
+      ],
       "explorer/context": [
         {
           "command": "lightGit.compareWithRevision",

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
+import type { GitExtension, API as GitAPI, Repository } from './types/git';
 
 const execAsync = promisify(exec);
 
@@ -241,6 +242,225 @@ async function openRemoteMain(uri?: vscode.Uri) {
     }
 }
 
+// Merge-base changes tree view
+type FileNode = {
+    kind: 'file';
+    basename: string;
+    absolutePath: string;
+    relativePath: string;
+};
+
+type FolderNode = {
+    kind: 'folder';
+    segments: string[];
+    absolutePath: string;
+    children: TreeNode[];
+};
+
+type TreeNode = FileNode | FolderNode;
+
+type RawFolder = {
+    kind: 'folder';
+    segment: string;
+    children: Map<string, RawNode>;
+};
+
+type RawFile = {
+    kind: 'file';
+    basename: string;
+    absolutePath: string;
+    relativePath: string;
+};
+
+type RawNode = RawFolder | RawFile;
+
+function buildRawTree(paths: string[], rootPath: string): RawFolder {
+    const root: RawFolder = { kind: 'folder', segment: '', children: new Map() };
+    for (const rel of paths) {
+        const parts = rel.split('/');
+        let node = root;
+        for (let i = 0; i < parts.length - 1; i++) {
+            const seg = parts[i];
+            const existing = node.children.get(seg);
+            let child: RawFolder;
+            if (existing && existing.kind === 'folder') {
+                child = existing;
+            } else {
+                child = { kind: 'folder', segment: seg, children: new Map() };
+                node.children.set(seg, child);
+            }
+            node = child;
+        }
+        const fname = parts[parts.length - 1];
+        node.children.set(fname, {
+            kind: 'file',
+            basename: fname,
+            absolutePath: path.join(rootPath, rel),
+            relativePath: rel,
+        });
+    }
+    return root;
+}
+
+function finalizeFolder(raw: RawFolder, parentAbsolutePath: string, compact: boolean): FolderNode {
+    const segments: string[] = raw.segment ? [raw.segment] : [];
+    let current = raw;
+
+    if (compact) {
+        while (current.children.size === 1) {
+            const [only] = current.children.values();
+            if (only.kind !== 'folder') break;
+            segments.push(only.segment);
+            current = only;
+        }
+    }
+
+    const folderAbsolutePath = segments.length === 0
+        ? parentAbsolutePath
+        : path.join(parentAbsolutePath, ...segments);
+
+    const folderEntries: RawFolder[] = [];
+    const fileEntries: RawFile[] = [];
+    for (const c of current.children.values()) {
+        if (c.kind === 'folder') folderEntries.push(c);
+        else fileEntries.push(c);
+    }
+    folderEntries.sort((a, b) => a.segment.localeCompare(b.segment));
+    fileEntries.sort((a, b) => a.basename.localeCompare(b.basename));
+
+    const children: TreeNode[] = [
+        ...folderEntries.map(f => finalizeFolder(f, folderAbsolutePath, compact)),
+        ...fileEntries.map<FileNode>(f => ({
+            kind: 'file',
+            basename: f.basename,
+            absolutePath: f.absolutePath,
+            relativePath: f.relativePath,
+        })),
+    ];
+
+    return { kind: 'folder', segments, absolutePath: folderAbsolutePath, children };
+}
+
+class MergeBaseChangesProvider implements vscode.TreeDataProvider<TreeNode> {
+    private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | void>();
+    readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+    private root: FolderNode | undefined;
+    private view: vscode.TreeView<TreeNode> | undefined;
+    mergeBaseHash: string | undefined;
+
+    setView(view: vscode.TreeView<TreeNode>) {
+        this.view = view;
+    }
+
+    async refresh(): Promise<void> {
+        await this.compute();
+        this._onDidChangeTreeData.fire();
+    }
+
+    private setMessage(msg: string | undefined) {
+        if (this.view) this.view.message = msg;
+    }
+
+    private async compute(): Promise<void> {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) {
+            this.root = undefined;
+            this.mergeBaseHash = undefined;
+            this.setMessage('No workspace folder open.');
+            return;
+        }
+        const cwd = folders[0].uri.fsPath;
+
+        let mergeBase: string;
+        try {
+            const { stdout } = await execAsync('git merge-base HEAD main', { cwd });
+            mergeBase = stdout.trim();
+        } catch {
+            this.root = undefined;
+            this.mergeBaseHash = undefined;
+            this.setMessage('Not a git repository, or no merge-base with main.');
+            return;
+        }
+        this.mergeBaseHash = mergeBase;
+
+        let paths: string[];
+        try {
+            const { stdout } = await execAsync(
+                `git diff --name-only -z ${mergeBase}`,
+                { cwd, maxBuffer: 32 * 1024 * 1024 }
+            );
+            paths = stdout.split('\0').filter(p => p.length > 0);
+        } catch (err) {
+            this.root = undefined;
+            this.setMessage(`Failed to list changed files: ${err}`);
+            return;
+        }
+
+        if (paths.length === 0) {
+            this.root = undefined;
+            this.setMessage('No files changed vs main.');
+            return;
+        }
+
+        const compact = vscode.workspace.getConfiguration('scm').get<boolean>('compactFolders', true);
+        const raw = buildRawTree(paths, cwd);
+        this.root = finalizeFolder(raw, cwd, compact);
+        this.setMessage(undefined);
+    }
+
+    getTreeItem(element: TreeNode): vscode.TreeItem {
+        if (element.kind === 'folder') {
+            const item = new vscode.TreeItem(
+                element.segments.join('/'),
+                vscode.TreeItemCollapsibleState.Expanded
+            );
+            item.resourceUri = vscode.Uri.file(element.absolutePath);
+            item.iconPath = vscode.ThemeIcon.Folder;
+            return item;
+        }
+        const item = new vscode.TreeItem(element.basename, vscode.TreeItemCollapsibleState.None);
+        item.resourceUri = vscode.Uri.file(element.absolutePath);
+        item.iconPath = vscode.ThemeIcon.File;
+        item.tooltip = element.relativePath;
+        item.command = {
+            command: 'lightGit.openMergeBaseDiff',
+            title: 'Open Merge-base Diff',
+            arguments: [vscode.Uri.file(element.absolutePath), this.mergeBaseHash],
+        };
+        return item;
+    }
+
+    getChildren(element?: TreeNode): TreeNode[] {
+        if (!element) return this.root?.children ?? [];
+        if (element.kind === 'folder') return element.children;
+        return [];
+    }
+}
+
+async function openMergeBaseDiff(uri: vscode.Uri, mergeBaseHash: string) {
+    if (!uri || !mergeBaseHash) return;
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!workspaceFolder) {
+        vscode.window.showErrorMessage('File is not in a workspace');
+        return;
+    }
+    const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath);
+    const oldUri = createGitUri(relativePath, mergeBaseHash);
+    const baseName = path.basename(uri.fsPath);
+    const shortHash = mergeBaseHash.slice(0, 7);
+    const title = `${baseName} (${shortHash}) ↔ ${baseName} (Working Tree)`;
+    await openDiffView(oldUri, uri, title, workspaceFolder);
+}
+
+async function getGitAPI(): Promise<GitAPI | undefined> {
+    const ext = vscode.extensions.getExtension<GitExtension>('vscode.git');
+    if (!ext) return undefined;
+    const exports = ext.isActive ? ext.exports : await ext.activate();
+    if (!exports.enabled) return undefined;
+    return exports.getAPI(1);
+}
+
 async function copyLineRangePath() {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
@@ -275,14 +495,33 @@ async function copyLineRangePath() {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+    const provider = new MergeBaseChangesProvider();
+    const view = vscode.window.createTreeView('lightGit.mergeBaseChanges', {
+        treeDataProvider: provider,
+    });
+    provider.setView(view);
+
     const commands = [
         vscode.commands.registerCommand('lightGit.compareWithRevision', compareWithRevision),
         vscode.commands.registerCommand('lightGit.openRemote', openRemote),
         vscode.commands.registerCommand('lightGit.openRemoteMain', openRemoteMain),
-        vscode.commands.registerCommand('lightGit.copyLineRangePath', copyLineRangePath)
+        vscode.commands.registerCommand('lightGit.copyLineRangePath', copyLineRangePath),
+        vscode.commands.registerCommand('lightGit.openMergeBaseDiff', openMergeBaseDiff),
+        vscode.commands.registerCommand('lightGit.refreshMergeBaseChanges', () => provider.refresh()),
     ];
 
-    context.subscriptions.push(...commands);
+    context.subscriptions.push(view, ...commands);
+
+    void provider.refresh();
+
+    void getGitAPI().then(api => {
+        if (!api) return;
+        const subscribe = (repo: Repository) => {
+            context.subscriptions.push(repo.state.onDidChange(() => provider.refresh()));
+        };
+        api.repositories.forEach(subscribe);
+        context.subscriptions.push(api.onDidOpenRepository(subscribe));
+    });
 }
 
 export function deactivate() {}
