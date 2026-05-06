@@ -2,7 +2,7 @@
   "name": "vscode-light-git",
   "displayName": "Light Git",
   "description": "Lightweight git tools for file comparison and remote links",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "publisher": "kswaldemar",
   "engines": {
     "vscode": "^1.74.0"
@@ -48,6 +48,12 @@
         "title": "Refresh",
         "category": "Light Git",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "lightGit.openChangedFile",
+        "title": "Open File",
+        "category": "Light Git",
+        "icon": "$(go-to-file)"
       }
     ],
     "views": {
@@ -68,6 +74,13 @@
           "group": "navigation"
         }
       ],
+      "view/item/context": [
+        {
+          "command": "lightGit.openChangedFile",
+          "when": "view == lightGit.mergeBaseChanges && viewItem == lightGitFile",
+          "group": "inline"
+        }
+      ],
       "commandPalette": [
         {
           "command": "lightGit.openMergeBaseDiff",
@@ -75,6 +88,10 @@
         },
         {
           "command": "lightGit.refreshMergeBaseChanges",
+          "when": "false"
+        },
+        {
+          "command": "lightGit.openChangedFile",
           "when": "false"
         }
       ],

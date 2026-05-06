@@ -514,6 +514,7 @@ class MergeBaseChangesProvider implements vscode.TreeDataProvider<TreeNode> {
         item.resourceUri = vscode.Uri.from({ scheme: TREE_SCHEME, path: element.absolutePath });
         item.iconPath = vscode.ThemeIcon.File;
         item.tooltip = element.relativePath;
+        item.contextValue = element.status === 'D' ? 'lightGitFileDeleted' : 'lightGitFile';
         item.command = {
             command: 'lightGit.openMergeBaseDiff',
             title: 'Open Merge-base Diff',
@@ -531,6 +532,16 @@ class MergeBaseChangesProvider implements vscode.TreeDataProvider<TreeNode> {
 
 function createEmptyUri(displayPath: string): vscode.Uri {
     return vscode.Uri.from({ scheme: EMPTY_SCHEME, path: displayPath });
+}
+
+async function openChangedFile(target: FileNode | vscode.Uri | string | undefined) {
+    if (!target) return;
+    let absolutePath: string;
+    if (typeof target === 'string') absolutePath = target;
+    else if (target instanceof vscode.Uri) absolutePath = target.fsPath;
+    else absolutePath = target.absolutePath;
+    if (!absolutePath) return;
+    await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(absolutePath));
 }
 
 async function openMergeBaseDiff(absolutePath: string, mergeBaseHash: string, status: ChangeStatus) {
@@ -626,6 +637,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('lightGit.openRemoteMain', openRemoteMain),
         vscode.commands.registerCommand('lightGit.copyLineRangePath', copyLineRangePath),
         vscode.commands.registerCommand('lightGit.openMergeBaseDiff', openMergeBaseDiff),
+        vscode.commands.registerCommand('lightGit.openChangedFile', openChangedFile),
         vscode.commands.registerCommand('lightGit.refreshMergeBaseChanges', () => provider.refresh()),
     ];
 
