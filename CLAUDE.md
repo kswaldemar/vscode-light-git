@@ -15,28 +15,41 @@ This is a VS Code extension called "Light Git" that provides lightweight git ope
 ## Architecture
 
 ### Core Structure
-- Single source file: `src/extension.ts` contains all extension logic
+- Source: `src/extension.ts` contains all extension logic; `src/types/git.d.ts` is a vendored copy of the public `vscode.git` extension API types
 - Built with VS Code Extension API and Node.js child_process for git commands
 - TypeScript compiled to CommonJS in `out/extension.js`
 
 ### Command Structure
-The extension registers three main commands:
+The extension registers these commands:
 1. `lightGit.compareWithRevision` - Compare files with git revisions using diff view
-2. `lightGit.openRemote` - Open files in remote repository (current branch)  
+2. `lightGit.openRemote` - Open files in remote repository (current branch)
 3. `lightGit.openRemoteMain` - Open files in remote repository (main branch)
+4. `lightGit.copyLineRangePath` - Copy `-L<start>,<end>:<path>` to clipboard
+5. `lightGit.openMergeBaseDiff` - Internal: open diff vs merge-base for a tree-view file (hidden from command palette)
+6. `lightGit.refreshMergeBaseChanges` - Refresh the Branch Changes view
+
+### Views
+- `lightGit.mergeBaseChanges` is contributed to the built-in `scm` view container, so it docks under the Source Control panel
 
 ### Key Components
-- **Git Operations**: Uses `child_process.exec` with git CLI commands
-- **Diff Provider**: Custom `TextDocumentContentProvider` for git show content
+- **Git Operations**: Uses `child_process.exec` with git CLI commands (`execAsync` promisified wrapper)
+- **Diff Provider**: Custom `TextDocumentContentProvider` for `git-show` (per-call, auto-disposed) and a global `light-git-empty` scheme that always returns empty content (used for added/deleted files in merge-base diffs)
 - **URL Construction**: Supports GitHub, GitLab, BitBucket with proper line number formatting
-- **Context Menus**: Commands available in both Explorer and Editor contexts
+- **Context Menus**: Compare/Open commands available in Explorer and Editor contexts
+- **Merge-base Tree View** (`MergeBaseChangesProvider`):
+  - Runs `git merge-base HEAD main` then `git diff --name-status -z <merge-base>` per refresh
+  - Builds a folder tree from the path list with single-child folder-chain compaction (honours `scm.compactFolders`)
+  - TreeItem `resourceUri` uses a custom `light-git-mb` URI scheme so a `FileDecorationProvider` can paint colored M/A/D/R/C/T/U badges (using `gitDecoration.*ResourceForeground` theme colors) without leaking decorations into Explorer/tabs
+  - Auto-refresh subscribes to `Repository.state.onDidChange` from the built-in `vscode.git` extension API (debounced upstream); manual refresh button in the view header
+  - Base branch is hardcoded to `main` for now
 
 ### Important Implementation Details
 - All git operations are async and use `execAsync` (promisified exec)
-- Cursor position is preserved when opening diff views (`extension.ts:44-54`)
-- Remote URL normalization handles SSH → HTTPS conversion (`extension.ts:68-76`)
-- Quick pick allows both selection and custom input for revisions (`extension.ts:97-133`)
+- Cursor position is preserved when opening diff views (in `openDiffView`)
+- Remote URL normalization handles SSH → HTTPS conversion (`normalizeRemoteUrl`)
+- Quick pick allows both selection and custom input for revisions (`selectRevision`)
 - Error handling shows user-friendly messages via VS Code notification API
+- For merge-base diffs of added files, the left pane uses the `light-git-empty` scheme; for deleted files, the right pane uses it
 
 ## Testing & Development
 - Extension loads from `out/extension.js` (compiled output)
