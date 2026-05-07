@@ -2,7 +2,7 @@
   "name": "vscode-light-git",
   "displayName": "Light Git",
   "description": "Lightweight git tools for file comparison and remote links",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "publisher": "kswaldemar",
   "engines": {
     "vscode": "^1.74.0"

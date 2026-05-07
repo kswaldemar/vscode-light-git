@@ -70,7 +70,9 @@ function normalizeRemoteUrl(remoteUrl: string): string {
     let webUrl = remoteUrl;
 
     if (webUrl.startsWith('git@')) {
-        webUrl = webUrl.replace('git@', 'https://').replace(':', '/');
+        webUrl = webUrl.replace(/^git@([^:]+):/, 'https://$1/');
+    } else if (webUrl.startsWith('ssh://git@')) {
+        webUrl = webUrl.replace(/^ssh:\/\/git@/, 'https://');
     }
 
     return webUrl.replace(/\.git$/, '');
