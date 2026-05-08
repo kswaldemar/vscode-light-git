@@ -100,6 +100,18 @@ function constructFileUrl(webUrl: string, branch: string, relativePath: string, 
     return fileUrl;
 }
 
+function constructCommitUrl(webUrl: string, hash: string): string {
+    if (webUrl.includes('bitbucket.org')) return `${webUrl}/commits/${hash}`;
+    if (webUrl.includes('gitlab.com')) return `${webUrl}/-/commit/${hash}`;
+    return `${webUrl}/commit/${hash}`;
+}
+
+function constructPrUrl(webUrl: string, prNumber: string): string {
+    if (webUrl.includes('bitbucket.org')) return `${webUrl}/pull-requests/${prNumber}`;
+    if (webUrl.includes('gitlab.com')) return `${webUrl}/-/merge_requests/${prNumber}`;
+    return `${webUrl}/pull/${prNumber}`;
+}
+
 async function selectRevision(branches: string[]) {
     const items = branches.map(branch => {
         const [hash, ...messageParts] = branch.split(' ');
@@ -621,6 +633,383 @@ async function copyLineRangePath() {
     await vscode.env.clipboard.writeText(rangeSpec);
 }
 
+// Selection History view
+function getSelectedLineRange(editor: vscode.TextEditor): { startLine: number; endLine: number } {
+    let startLine = editor.selection.start.line + 1;
+    let endLine = editor.selection.end.line + 1;
+    if (editor.selection.isEmpty) {
+        endLine = startLine;
+    } else if (editor.selection.end.character === 0) {
+        endLine = Math.max(startLine, endLine - 1);
+    }
+    if (startLine > endLine) [startLine, endLine] = [endLine, startLine];
+    return { startLine, endLine };
+}
+
+function toGitPath(relativePath: string): string {
+    return relativePath.split(path.sep).join('/');
+}
+
+type SelectionCommit = {
+    fullHash: string;
+    shortHash: string;
+    subject: string;
+    author: string;
+    date: string;
+    oldPath: string;
+    newPath: string;
+    oldContent: string;
+    newContent: string;
+};
+
+type SelectionQuery = {
+    workspaceFolder: vscode.WorkspaceFolder;
+    relativePath: string;
+    startLine: number;
+    endLine: number;
+};
+
+const PR_NUMBER_RE = /\(#(\d+)\)\s*$/;
+const SELECTION_DIFF_SCHEME = 'light-git-selection';
+
+function parseHunkPatch(patch: string): { oldPath: string; newPath: string; oldContent: string; newContent: string } {
+    let oldPath = '';
+    let newPath = '';
+    const oldLines: string[] = [];
+    const newLines: string[] = [];
+    let inHunk = false;
+    let firstHunk = true;
+
+    for (const line of patch.split('\n')) {
+        if (line.startsWith('--- ')) {
+            const p = line.slice(4).trim();
+            oldPath = p === '/dev/null' ? '' : p.replace(/^a\//, '');
+            inHunk = false;
+        } else if (line.startsWith('+++ ')) {
+            const p = line.slice(4).trim();
+            newPath = p === '/dev/null' ? '' : p.replace(/^b\//, '');
+            inHunk = false;
+        } else if (line.startsWith('@@ ')) {
+            inHunk = true;
+            if (!firstHunk) {
+                oldLines.push('');
+                newLines.push('');
+            }
+            firstHunk = false;
+        } else if (inHunk && line.length > 0) {
+            const prefix = line[0];
+            const content = line.slice(1);
+            if (prefix === ' ') {
+                oldLines.push(content);
+                newLines.push(content);
+            } else if (prefix === '-') {
+                oldLines.push(content);
+            } else if (prefix === '+') {
+                newLines.push(content);
+            }
+        }
+    }
+
+    return {
+        oldPath,
+        newPath,
+        oldContent: oldLines.join('\n'),
+        newContent: newLines.join('\n'),
+    };
+}
+
+async function runSelectionLog(query: SelectionQuery): Promise<SelectionCommit[]> {
+    const gitPath = toGitPath(query.relativePath);
+    const cmd = `git log -L${query.startLine},${query.endLine}:"${gitPath}" --format=format:%x00%H%x1f%h%x1f%s%x1f%an%x1f%ad --date=short`;
+    const { stdout } = await execAsync(cmd, {
+        cwd: query.workspaceFolder.uri.fsPath,
+        maxBuffer: 32 * 1024 * 1024,
+    });
+    const blocks = stdout.split('\0').filter(b => b.length > 0);
+    const commits: SelectionCommit[] = [];
+    for (const block of blocks) {
+        const newlineIdx = block.indexOf('\n');
+        const metadata = newlineIdx === -1 ? block : block.slice(0, newlineIdx);
+        const patch = newlineIdx === -1 ? '' : block.slice(newlineIdx + 1);
+        const parts = metadata.split('\x1f');
+        if (parts.length < 5) continue;
+        const [fullHash, shortHash, subject, author, date] = parts;
+        const { oldPath, newPath, oldContent, newContent } = parseHunkPatch(patch);
+        commits.push({ fullHash, shortHash, subject, author, date, oldPath, newPath, oldContent, newContent });
+    }
+    return commits;
+}
+
+class SelectionDiffContentProvider implements vscode.TextDocumentContentProvider {
+    private cache = new Map<string, string>();
+
+    set(uri: vscode.Uri, content: string) {
+        this.cache.set(uri.toString(), content);
+    }
+
+    provideTextDocumentContent(uri: vscode.Uri): string {
+        return this.cache.get(uri.toString()) ?? '';
+    }
+}
+
+type SelectionDiffMode = 'hunk' | 'full';
+type SelectionDiffSide = 'before' | 'after';
+
+function createSelectionDiffUri(opts: {
+    filePath: string;
+    hash: string;
+    side: SelectionDiffSide;
+    mode: SelectionDiffMode;
+}): vscode.Uri {
+    const params = new URLSearchParams({ hash: opts.hash, side: opts.side, mode: opts.mode });
+    return vscode.Uri.from({
+        scheme: SELECTION_DIFF_SCHEME,
+        path: opts.filePath || '(empty).txt',
+        query: params.toString(),
+    });
+}
+
+function parseSelectionDiffUri(uri: vscode.Uri): { hash: string; side: SelectionDiffSide; mode: SelectionDiffMode } | undefined {
+    if (uri.scheme !== SELECTION_DIFF_SCHEME) return undefined;
+    const params = new URLSearchParams(uri.query);
+    const hash = params.get('hash');
+    const side = params.get('side');
+    const mode = params.get('mode');
+    if (!hash) return undefined;
+    if (side !== 'before' && side !== 'after') return undefined;
+    if (mode !== 'hunk' && mode !== 'full') return undefined;
+    return { hash, side, mode };
+}
+
+function getActiveSelectionDiff(): { hash: string; mode: SelectionDiffMode } | undefined {
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    if (!(input instanceof vscode.TabInputTextDiff)) return undefined;
+    const parsed = parseSelectionDiffUri(input.modified);
+    return parsed ? { hash: parsed.hash, mode: parsed.mode } : undefined;
+}
+
+function updateSelectionDiffContext() {
+    const info = getActiveSelectionDiff();
+    void vscode.commands.executeCommand('setContext', 'lightGit.selectionDiffMode', info?.mode ?? '');
+}
+
+class SelectionHistoryProvider implements vscode.TreeDataProvider<SelectionCommit> {
+    private readonly _onDidChangeTreeData = new vscode.EventEmitter<SelectionCommit | undefined | void>();
+    readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+    private view: vscode.TreeView<SelectionCommit> | undefined;
+    commits: SelectionCommit[] = [];
+    query: SelectionQuery | undefined;
+
+    setView(view: vscode.TreeView<SelectionCommit>) {
+        this.view = view;
+        this.setMessage('Select lines and run "Show Selection History".');
+    }
+
+    async revealCommit(commit: SelectionCommit) {
+        if (!this.view) return;
+        try {
+            await this.view.reveal(commit, { select: true, focus: false, expand: false });
+        } catch {
+            // ignore reveal failures
+        }
+    }
+
+    private setMessage(msg: string | undefined) {
+        if (this.view) this.view.message = msg;
+    }
+
+    async setQuery(query: SelectionQuery): Promise<void> {
+        this.query = query;
+        await this.refresh();
+    }
+
+    async refresh(): Promise<void> {
+        if (!this.query) {
+            this.commits = [];
+            this.setMessage('Select lines and run "Show Selection History".');
+            this._onDidChangeTreeData.fire();
+            return;
+        }
+        try {
+            this.commits = await runSelectionLog(this.query);
+        } catch (err) {
+            this.commits = [];
+            this.setMessage(`Failed to load history: ${err}`);
+            this._onDidChangeTreeData.fire();
+            return;
+        }
+        if (this.commits.length === 0) {
+            this.setMessage('No history found for this selection.');
+        } else {
+            const { relativePath, startLine, endLine } = this.query;
+            this.setMessage(`${relativePath} L${startLine}-${endLine}`);
+        }
+        this._onDidChangeTreeData.fire();
+    }
+
+    getTreeItem(c: SelectionCommit): vscode.TreeItem {
+        const item = new vscode.TreeItem(c.subject, vscode.TreeItemCollapsibleState.None);
+        item.description = `${c.shortHash} · ${c.date} · ${c.author}`;
+        item.iconPath = new vscode.ThemeIcon('git-commit');
+        item.contextValue = 'lightGitSelectionCommit';
+        const md = new vscode.MarkdownString();
+        md.appendMarkdown('**');
+        md.appendText(c.subject);
+        md.appendMarkdown('**\n\n');
+        md.appendCodeblock(c.fullHash, 'text');
+        md.appendText(`${c.author} — ${c.date}`);
+        item.tooltip = md;
+        item.command = {
+            command: 'lightGit.openSelectionCommitDiff',
+            title: 'Open Commit Diff',
+            arguments: [c],
+        };
+        return item;
+    }
+
+    getChildren(): SelectionCommit[] {
+        return this.commits;
+    }
+
+    getParent(): SelectionCommit | undefined {
+        return undefined;
+    }
+}
+
+async function showSelectionHistory(provider: SelectionHistoryProvider) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showErrorMessage('No active editor');
+        return;
+    }
+    const { startLine, endLine } = getSelectedLineRange(editor);
+    const document = editor.document;
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!workspaceFolder) {
+        vscode.window.showErrorMessage('File is not in a workspace');
+        return;
+    }
+    const relativePath = path.relative(workspaceFolder.uri.fsPath, document.fileName);
+    await provider.setQuery({ workspaceFolder, relativePath, startLine, endLine });
+    await vscode.commands.executeCommand('lightGit.selectionHistory.focus');
+}
+
+async function openSelectionCommitDiff(diffProvider: SelectionDiffContentProvider, commit: SelectionCommit) {
+    if (!commit) return;
+    const displayOld = commit.oldPath || commit.newPath;
+    const displayNew = commit.newPath || commit.oldPath;
+    const oldUri = createSelectionDiffUri({ filePath: displayOld, hash: commit.fullHash, side: 'before', mode: 'hunk' });
+    const newUri = createSelectionDiffUri({ filePath: displayNew, hash: commit.fullHash, side: 'after', mode: 'hunk' });
+    diffProvider.set(oldUri, commit.oldContent);
+    diffProvider.set(newUri, commit.newContent);
+
+    const oldBase = path.basename(displayOld);
+    const newBase = path.basename(displayNew);
+    const isRename = !!commit.oldPath && !!commit.newPath && commit.oldPath !== commit.newPath;
+    const leftLabel = commit.oldPath ? `${commit.shortHash}^` : 'Added';
+    const title = isRename
+        ? `${oldBase} (${leftLabel}) ↔ ${newBase} (${commit.shortHash}) — selection`
+        : `${newBase} (${leftLabel}) ↔ ${newBase} (${commit.shortHash}) — selection`;
+
+    await vscode.commands.executeCommand('vscode.diff', oldUri, newUri, title);
+}
+
+async function fetchGitShow(workspaceFolder: vscode.WorkspaceFolder, rev: string, gitPath: string): Promise<string> {
+    try {
+        const { stdout } = await execAsync(`git show ${rev}:"${gitPath}"`, {
+            cwd: workspaceFolder.uri.fsPath,
+            maxBuffer: 32 * 1024 * 1024,
+        });
+        return stdout;
+    } catch {
+        return '';
+    }
+}
+
+async function openSelectionCommitFullDiff(provider: SelectionHistoryProvider, diffProvider: SelectionDiffContentProvider, commit: SelectionCommit) {
+    if (!commit) return;
+    const query = provider.query;
+    if (!query) return;
+    const { workspaceFolder } = query;
+
+    const oldPath = commit.oldPath;
+    const newPath = commit.newPath || query.relativePath;
+    const displayOld = oldPath || newPath;
+    const displayNew = newPath || oldPath;
+
+    const oldContent = oldPath
+        ? await fetchGitShow(workspaceFolder, `${commit.fullHash}^`, toGitPath(oldPath))
+        : '';
+    const newContent = commit.newPath
+        ? await fetchGitShow(workspaceFolder, commit.fullHash, toGitPath(commit.newPath))
+        : '';
+
+    const oldUri = createSelectionDiffUri({ filePath: displayOld, hash: commit.fullHash, side: 'before', mode: 'full' });
+    const newUri = createSelectionDiffUri({ filePath: displayNew, hash: commit.fullHash, side: 'after', mode: 'full' });
+    diffProvider.set(oldUri, oldContent);
+    diffProvider.set(newUri, newContent);
+
+    const oldBase = path.basename(displayOld);
+    const newBase = path.basename(displayNew);
+    const isRename = !!oldPath && !!commit.newPath && oldPath !== commit.newPath;
+    const leftLabel = oldPath ? `${commit.shortHash}^` : 'Added';
+    const title = isRename
+        ? `${oldBase} (${leftLabel}) ↔ ${newBase} (${commit.shortHash})`
+        : `${newBase} (${leftLabel}) ↔ ${newBase} (${commit.shortHash})`;
+
+    await vscode.commands.executeCommand('vscode.diff', oldUri, newUri, title);
+}
+
+async function toggleSelectionDiffMode(provider: SelectionHistoryProvider, diffProvider: SelectionDiffContentProvider) {
+    const active = getActiveSelectionDiff();
+    if (!active) return;
+    const commit = provider.commits.find(c => c.fullHash === active.hash);
+    if (!commit) return;
+    if (active.mode === 'hunk') {
+        await openSelectionCommitFullDiff(provider, diffProvider, commit);
+    } else {
+        await openSelectionCommitDiff(diffProvider, commit);
+    }
+}
+
+async function navigateSelectionDiff(provider: SelectionHistoryProvider, diffProvider: SelectionDiffContentProvider, direction: 'prev' | 'next') {
+    const active = getActiveSelectionDiff();
+    if (!active) return;
+    const idx = provider.commits.findIndex(c => c.fullHash === active.hash);
+    if (idx < 0) return;
+    const targetIdx = direction === 'next' ? idx + 1 : idx - 1;
+    if (targetIdx < 0 || targetIdx >= provider.commits.length) return;
+    const next = provider.commits[targetIdx];
+    if (active.mode === 'hunk') {
+        await openSelectionCommitDiff(diffProvider, next);
+    } else {
+        await openSelectionCommitFullDiff(provider, diffProvider, next);
+    }
+    void provider.revealCommit(next);
+}
+
+async function openCommitInRemote(commit: SelectionCommit) {
+    if (!commit) return;
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        vscode.window.showErrorMessage('No workspace folder open');
+        return;
+    }
+    const cwd = folders[0].uri.fsPath;
+    try {
+        const { stdout } = await execAsync('git config --get remote.origin.url', { cwd });
+        const webUrl = normalizeRemoteUrl(stdout.trim());
+        const prMatch = commit.subject.match(PR_NUMBER_RE);
+        const url = prMatch
+            ? constructPrUrl(webUrl, prMatch[1])
+            : constructCommitUrl(webUrl, commit.fullHash);
+        await vscode.env.openExternal(vscode.Uri.parse(url));
+    } catch (error) {
+        vscode.window.showErrorMessage(`${error}`);
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     const decorations = new MergeBaseDecorationProvider();
     const provider = new MergeBaseChangesProvider(decorations);
@@ -628,6 +1017,14 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider: provider,
     });
     provider.setView(view);
+
+    const selectionProvider = new SelectionHistoryProvider();
+    const selectionView = vscode.window.createTreeView('lightGit.selectionHistory', {
+        treeDataProvider: selectionProvider,
+    });
+    selectionProvider.setView(selectionView);
+
+    const diffProvider = new SelectionDiffContentProvider();
 
     const emptyProvider: vscode.TextDocumentContentProvider = {
         provideTextDocumentContent: () => '',
@@ -641,14 +1038,29 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('lightGit.openMergeBaseDiff', openMergeBaseDiff),
         vscode.commands.registerCommand('lightGit.openChangedFile', openChangedFile),
         vscode.commands.registerCommand('lightGit.refreshMergeBaseChanges', () => provider.refresh()),
+        vscode.commands.registerCommand('lightGit.showSelectionHistory', () => showSelectionHistory(selectionProvider)),
+        vscode.commands.registerCommand('lightGit.refreshSelectionHistory', () => selectionProvider.refresh()),
+        vscode.commands.registerCommand('lightGit.openSelectionCommitDiff', (c: SelectionCommit) => openSelectionCommitDiff(diffProvider, c)),
+        vscode.commands.registerCommand('lightGit.openSelectionCommitFullDiff', (c: SelectionCommit) => openSelectionCommitFullDiff(selectionProvider, diffProvider, c)),
+        vscode.commands.registerCommand('lightGit.showFullFileDiff', () => toggleSelectionDiffMode(selectionProvider, diffProvider)),
+        vscode.commands.registerCommand('lightGit.showSelectionDiffOnly', () => toggleSelectionDiffMode(selectionProvider, diffProvider)),
+        vscode.commands.registerCommand('lightGit.selectionDiffPrevCommit', () => navigateSelectionDiff(selectionProvider, diffProvider, 'prev')),
+        vscode.commands.registerCommand('lightGit.selectionDiffNextCommit', () => navigateSelectionDiff(selectionProvider, diffProvider, 'next')),
+        vscode.commands.registerCommand('lightGit.openCommitInRemote', (c: SelectionCommit) => openCommitInRemote(c)),
     ];
 
     context.subscriptions.push(
         view,
+        selectionView,
         vscode.window.registerFileDecorationProvider(decorations),
         vscode.workspace.registerTextDocumentContentProvider(EMPTY_SCHEME, emptyProvider),
+        vscode.workspace.registerTextDocumentContentProvider(SELECTION_DIFF_SCHEME, diffProvider),
+        vscode.window.tabGroups.onDidChangeTabs(updateSelectionDiffContext),
+        vscode.window.tabGroups.onDidChangeTabGroups(updateSelectionDiffContext),
         ...commands
     );
+
+    updateSelectionDiffContext();
 
     void provider.refresh();
 

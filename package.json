@@ -54,6 +54,58 @@
         "title": "Open File",
         "category": "Light Git",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "lightGit.showSelectionHistory",
+        "title": "Show Selection History",
+        "category": "Light Git"
+      },
+      {
+        "command": "lightGit.refreshSelectionHistory",
+        "title": "Refresh",
+        "category": "Light Git",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "lightGit.openSelectionCommitDiff",
+        "title": "Open Selection Diff",
+        "category": "Light Git"
+      },
+      {
+        "command": "lightGit.openSelectionCommitFullDiff",
+        "title": "Open Full File Diff",
+        "category": "Light Git",
+        "icon": "$(file)"
+      },
+      {
+        "command": "lightGit.openCommitInRemote",
+        "title": "Open Commit/PR in Browser",
+        "category": "Light Git",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "lightGit.showFullFileDiff",
+        "title": "Show Full File",
+        "category": "Light Git",
+        "icon": "$(file)"
+      },
+      {
+        "command": "lightGit.showSelectionDiffOnly",
+        "title": "Show Selection Only",
+        "category": "Light Git",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "lightGit.selectionDiffPrevCommit",
+        "title": "Previous Commit",
+        "category": "Light Git",
+        "icon": "$(triangle-up)"
+      },
+      {
+        "command": "lightGit.selectionDiffNextCommit",
+        "title": "Next Commit",
+        "category": "Light Git",
+        "icon": "$(triangle-down)"
       }
     ],
     "views": {
@@ -62,6 +114,12 @@
           "id": "lightGit.mergeBaseChanges",
           "name": "Branch Changes (vs main)",
           "icon": "$(git-pull-request)",
+          "contextualTitle": "Light Git"
+        },
+        {
+          "id": "lightGit.selectionHistory",
+          "name": "Selection History",
+          "icon": "$(history)",
           "contextualTitle": "Light Git"
         }
       ]
@@ -72,12 +130,22 @@
           "command": "lightGit.refreshMergeBaseChanges",
           "when": "view == lightGit.mergeBaseChanges",
           "group": "navigation"
+        },
+        {
+          "command": "lightGit.refreshSelectionHistory",
+          "when": "view == lightGit.selectionHistory",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
         {
           "command": "lightGit.openChangedFile",
           "when": "view == lightGit.mergeBaseChanges && viewItem == lightGitFile",
+          "group": "inline"
+        },
+        {
+          "command": "lightGit.openCommitInRemote",
+          "when": "view == lightGit.selectionHistory && viewItem == lightGitSelectionCommit",
           "group": "inline"
         }
       ],
@@ -93,6 +161,44 @@
         {
           "command": "lightGit.openChangedFile",
           "when": "false"
+        },
+        {
+          "command": "lightGit.refreshSelectionHistory",
+          "when": "false"
+        },
+        {
+          "command": "lightGit.openSelectionCommitDiff",
+          "when": "false"
+        },
+        {
+          "command": "lightGit.openSelectionCommitFullDiff",
+          "when": "false"
+        },
+        {
+          "command": "lightGit.openCommitInRemote",
+          "when": "false"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "lightGit.selectionDiffPrevCommit",
+          "when": "resourceScheme == 'light-git-selection'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lightGit.selectionDiffNextCommit",
+          "when": "resourceScheme == 'light-git-selection'",
+          "group": "navigation@2"
+        },
+        {
+          "command": "lightGit.showFullFileDiff",
+          "when": "resourceScheme == 'light-git-selection' && lightGit.selectionDiffMode == 'hunk'",
+          "group": "navigation@3"
+        },
+        {
+          "command": "lightGit.showSelectionDiffOnly",
+          "when": "resourceScheme == 'light-git-selection' && lightGit.selectionDiffMode == 'full'",
+          "group": "navigation@3"
         }
       ],
       "explorer/context": [
@@ -123,6 +229,10 @@
         },
         {
           "command": "lightGit.openRemote",
+          "group": "7_modification"
+        },
+        {
+          "command": "lightGit.showSelectionHistory",
           "group": "7_modification"
         }
       ]
