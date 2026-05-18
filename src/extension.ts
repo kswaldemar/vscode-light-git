@@ -650,6 +650,8 @@ function toGitPath(relativePath: string): string {
     return relativePath.split(path.sep).join('/');
 }
 
+type SelectionKind = 'range' | 'file';
+
 type SelectionCommit = {
     fullHash: string;
     shortHash: string;
@@ -660,6 +662,7 @@ type SelectionCommit = {
     newPath: string;
     oldContent: string;
     newContent: string;
+    kind: SelectionKind;
 };
 
 type SelectionQuery = {
@@ -667,6 +670,7 @@ type SelectionQuery = {
     relativePath: string;
     startLine: number;
     endLine: number;
+    kind: SelectionKind;
 };
 
 const PR_NUMBER_RE = /\(#(\d+)\)\s*$/;
@@ -718,9 +722,27 @@ function parseHunkPatch(patch: string): { oldPath: string; newPath: string; oldC
     };
 }
 
+function parseNameStatusEntry(line: string, fallbackPath: string): { oldPath: string; newPath: string } {
+    const parts = line.split('\t');
+    const code = parts[0] ?? '';
+    if (code.startsWith('R') || code.startsWith('C')) {
+        return { oldPath: parts[1] ?? '', newPath: parts[2] ?? '' };
+    }
+    if (code === 'D') {
+        return { oldPath: parts[1] ?? fallbackPath, newPath: '' };
+    }
+    if (code === 'A') {
+        return { oldPath: '', newPath: parts[1] ?? fallbackPath };
+    }
+    const p = parts[1] ?? fallbackPath;
+    return { oldPath: p, newPath: p };
+}
+
 async function runSelectionLog(query: SelectionQuery): Promise<SelectionCommit[]> {
     const gitPath = toGitPath(query.relativePath);
-    const cmd = `git log -L${query.startLine},${query.endLine}:"${gitPath}" --format=format:%x00%H%x1f%h%x1f%s%x1f%an%x1f%ad --date=short`;
+    const cmd = query.kind === 'file'
+        ? `git log --follow --name-status --format=format:%x00%H%x1f%h%x1f%s%x1f%an%x1f%ad --date=short -- "${gitPath}"`
+        : `git log -L${query.startLine},${query.endLine}:"${gitPath}" --format=format:%x00%H%x1f%h%x1f%s%x1f%an%x1f%ad --date=short`;
     const { stdout } = await execAsync(cmd, {
         cwd: query.workspaceFolder.uri.fsPath,
         maxBuffer: 32 * 1024 * 1024,
@@ -730,12 +752,18 @@ async function runSelectionLog(query: SelectionQuery): Promise<SelectionCommit[]
     for (const block of blocks) {
         const newlineIdx = block.indexOf('\n');
         const metadata = newlineIdx === -1 ? block : block.slice(0, newlineIdx);
-        const patch = newlineIdx === -1 ? '' : block.slice(newlineIdx + 1);
+        const remainder = newlineIdx === -1 ? '' : block.slice(newlineIdx + 1);
         const parts = metadata.split('\x1f');
         if (parts.length < 5) continue;
         const [fullHash, shortHash, subject, author, date] = parts;
-        const { oldPath, newPath, oldContent, newContent } = parseHunkPatch(patch);
-        commits.push({ fullHash, shortHash, subject, author, date, oldPath, newPath, oldContent, newContent });
+        if (query.kind === 'file') {
+            const statusLine = remainder.split('\n').find((l: string) => l.length > 0) ?? '';
+            const { oldPath, newPath } = parseNameStatusEntry(statusLine, gitPath);
+            commits.push({ fullHash, shortHash, subject, author, date, oldPath, newPath, oldContent: '', newContent: '', kind: 'file' });
+        } else {
+            const { oldPath, newPath, oldContent, newContent } = parseHunkPatch(remainder);
+            commits.push({ fullHash, shortHash, subject, author, date, oldPath, newPath, oldContent, newContent, kind: 'range' });
+        }
     }
     return commits;
 }
@@ -760,8 +788,9 @@ function createSelectionDiffUri(opts: {
     hash: string;
     side: SelectionDiffSide;
     mode: SelectionDiffMode;
+    kind: SelectionKind;
 }): vscode.Uri {
-    const params = new URLSearchParams({ hash: opts.hash, side: opts.side, mode: opts.mode });
+    const params = new URLSearchParams({ hash: opts.hash, side: opts.side, mode: opts.mode, kind: opts.kind });
     return vscode.Uri.from({
         scheme: SELECTION_DIFF_SCHEME,
         path: opts.filePath || '(empty).txt',
@@ -769,28 +798,31 @@ function createSelectionDiffUri(opts: {
     });
 }
 
-function parseSelectionDiffUri(uri: vscode.Uri): { hash: string; side: SelectionDiffSide; mode: SelectionDiffMode } | undefined {
+function parseSelectionDiffUri(uri: vscode.Uri): { hash: string; side: SelectionDiffSide; mode: SelectionDiffMode; kind: SelectionKind } | undefined {
     if (uri.scheme !== SELECTION_DIFF_SCHEME) return undefined;
     const params = new URLSearchParams(uri.query);
     const hash = params.get('hash');
     const side = params.get('side');
     const mode = params.get('mode');
+    const kind = params.get('kind');
     if (!hash) return undefined;
     if (side !== 'before' && side !== 'after') return undefined;
     if (mode !== 'hunk' && mode !== 'full') return undefined;
-    return { hash, side, mode };
+    if (kind !== 'range' && kind !== 'file') return undefined;
+    return { hash, side, mode, kind };
 }
 
-function getActiveSelectionDiff(): { hash: string; mode: SelectionDiffMode } | undefined {
+function getActiveSelectionDiff(): { hash: string; mode: SelectionDiffMode; kind: SelectionKind } | undefined {
     const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
     if (!(input instanceof vscode.TabInputTextDiff)) return undefined;
     const parsed = parseSelectionDiffUri(input.modified);
-    return parsed ? { hash: parsed.hash, mode: parsed.mode } : undefined;
+    return parsed ? { hash: parsed.hash, mode: parsed.mode, kind: parsed.kind } : undefined;
 }
 
 function updateSelectionDiffContext() {
     const info = getActiveSelectionDiff();
     void vscode.commands.executeCommand('setContext', 'lightGit.selectionDiffMode', info?.mode ?? '');
+    void vscode.commands.executeCommand('setContext', 'lightGit.selectionDiffKind', info?.kind ?? '');
 }
 
 class SelectionHistoryProvider implements vscode.TreeDataProvider<SelectionCommit> {
@@ -841,6 +873,8 @@ class SelectionHistoryProvider implements vscode.TreeDataProvider<SelectionCommi
         }
         if (this.commits.length === 0) {
             this.setMessage('No history found for this selection.');
+        } else if (this.query.kind === 'file') {
+            this.setMessage(`${this.query.relativePath} — full history`);
         } else {
             const { relativePath, startLine, endLine } = this.query;
             this.setMessage(`${relativePath} L${startLine}-${endLine}`);
@@ -850,7 +884,7 @@ class SelectionHistoryProvider implements vscode.TreeDataProvider<SelectionCommi
 
     getTreeItem(c: SelectionCommit): vscode.TreeItem {
         const item = new vscode.TreeItem(c.subject, vscode.TreeItemCollapsibleState.None);
-        item.description = `${c.shortHash} · ${c.date} · ${c.author}`;
+        item.description = `${c.date} · ${c.author}`;
         item.iconPath = new vscode.ThemeIcon('git-commit');
         item.contextValue = 'lightGitSelectionCommit';
         const md = new vscode.MarkdownString();
@@ -860,11 +894,9 @@ class SelectionHistoryProvider implements vscode.TreeDataProvider<SelectionCommi
         md.appendCodeblock(c.fullHash, 'text');
         md.appendText(`${c.author} — ${c.date}`);
         item.tooltip = md;
-        item.command = {
-            command: 'lightGit.openSelectionCommitDiff',
-            title: 'Open Commit Diff',
-            arguments: [c],
-        };
+        item.command = c.kind === 'file'
+            ? { command: 'lightGit.openSelectionCommitFullDiff', title: 'Open Full File Diff', arguments: [c] }
+            : { command: 'lightGit.openSelectionCommitDiff', title: 'Open Commit Diff', arguments: [c] };
         return item;
     }
 
@@ -883,6 +915,7 @@ async function showSelectionHistory(provider: SelectionHistoryProvider) {
         vscode.window.showErrorMessage('No active editor');
         return;
     }
+    const kind: SelectionKind = editor.selection.isEmpty ? 'file' : 'range';
     const { startLine, endLine } = getSelectedLineRange(editor);
     const document = editor.document;
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
@@ -891,7 +924,7 @@ async function showSelectionHistory(provider: SelectionHistoryProvider) {
         return;
     }
     const relativePath = path.relative(workspaceFolder.uri.fsPath, document.fileName);
-    await provider.setQuery({ workspaceFolder, relativePath, startLine, endLine });
+    await provider.setQuery({ workspaceFolder, relativePath, startLine, endLine, kind });
     await vscode.commands.executeCommand('lightGit.selectionHistory.focus');
 }
 
@@ -899,8 +932,8 @@ async function openSelectionCommitDiff(diffProvider: SelectionDiffContentProvide
     if (!commit) return;
     const displayOld = commit.oldPath || commit.newPath;
     const displayNew = commit.newPath || commit.oldPath;
-    const oldUri = createSelectionDiffUri({ filePath: displayOld, hash: commit.fullHash, side: 'before', mode: 'hunk' });
-    const newUri = createSelectionDiffUri({ filePath: displayNew, hash: commit.fullHash, side: 'after', mode: 'hunk' });
+    const oldUri = createSelectionDiffUri({ filePath: displayOld, hash: commit.fullHash, side: 'before', mode: 'hunk', kind: commit.kind });
+    const newUri = createSelectionDiffUri({ filePath: displayNew, hash: commit.fullHash, side: 'after', mode: 'hunk', kind: commit.kind });
     diffProvider.set(oldUri, commit.oldContent);
     diffProvider.set(newUri, commit.newContent);
 
@@ -945,8 +978,8 @@ async function openSelectionCommitFullDiff(provider: SelectionHistoryProvider, d
         ? await fetchGitShow(workspaceFolder, commit.fullHash, toGitPath(commit.newPath))
         : '';
 
-    const oldUri = createSelectionDiffUri({ filePath: displayOld, hash: commit.fullHash, side: 'before', mode: 'full' });
-    const newUri = createSelectionDiffUri({ filePath: displayNew, hash: commit.fullHash, side: 'after', mode: 'full' });
+    const oldUri = createSelectionDiffUri({ filePath: displayOld, hash: commit.fullHash, side: 'before', mode: 'full', kind: commit.kind });
+    const newUri = createSelectionDiffUri({ filePath: displayNew, hash: commit.fullHash, side: 'after', mode: 'full', kind: commit.kind });
     diffProvider.set(oldUri, oldContent);
     diffProvider.set(newUri, newContent);
 
@@ -987,6 +1020,11 @@ async function navigateSelectionDiff(provider: SelectionHistoryProvider, diffPro
         await openSelectionCommitFullDiff(provider, diffProvider, next);
     }
     void provider.revealCommit(next);
+}
+
+async function copySelectionCommitHash(commit: SelectionCommit) {
+    if (!commit) return;
+    await vscode.env.clipboard.writeText(commit.fullHash);
 }
 
 async function openCommitInRemote(commit: SelectionCommit) {
@@ -1047,6 +1085,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('lightGit.selectionDiffPrevCommit', () => navigateSelectionDiff(selectionProvider, diffProvider, 'prev')),
         vscode.commands.registerCommand('lightGit.selectionDiffNextCommit', () => navigateSelectionDiff(selectionProvider, diffProvider, 'next')),
         vscode.commands.registerCommand('lightGit.openCommitInRemote', (c: SelectionCommit) => openCommitInRemote(c)),
+        vscode.commands.registerCommand('lightGit.copySelectionCommitHash', (c: SelectionCommit) => copySelectionCommitHash(c)),
     ];
 
     context.subscriptions.push(
