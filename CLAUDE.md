@@ -27,6 +27,7 @@ The extension registers these commands:
 4. `lightGit.copyLineRangePath` - Copy `-L<start>,<end>:<path>` to clipboard
 5. `lightGit.openMergeBaseDiff` - Internal: open diff vs merge-base for a tree-view file (hidden from command palette)
 6. `lightGit.refreshMergeBaseChanges` - Refresh the Branch Changes view
+7. `lightGit.selectBaseBranch` - Pick the base branch for the Branch Changes view (per current branch)
 
 ### Views
 - `lightGit.mergeBaseChanges` is contributed to the built-in `scm` view container, so it docks under the Source Control panel
@@ -37,11 +38,13 @@ The extension registers these commands:
 - **URL Construction**: Supports GitHub, GitLab, BitBucket with proper line number formatting
 - **Context Menus**: Compare/Open commands available in Explorer and Editor contexts
 - **Merge-base Tree View** (`MergeBaseChangesProvider`):
-  - Runs `git merge-base HEAD main` then `git diff --name-status -z <merge-base>` per refresh
+  - Runs `git merge-base HEAD <baseRef>` then `git diff --name-status -z <merge-base>` per refresh
   - Builds a folder tree from the path list with single-child folder-chain compaction (honours `scm.compactFolders`)
   - TreeItem `resourceUri` uses a custom `light-git-mb` URI scheme so a `FileDecorationProvider` can paint colored M/A/D/R/C/T/U badges (using `gitDecoration.*ResourceForeground` theme colors) without leaking decorations into Explorer/tabs
   - Auto-refresh subscribes to `Repository.state.onDidChange` from the built-in `vscode.git` extension API (debounced upstream); manual refresh button in the view header
-  - Base branch is hardcoded to `main` for now
+  - **Base branch is per-checked-out-branch**, stored in git config as `branch.<name>.lightgitbase` (local `.git/config`, never committed). `getBaseRef`/`setBaseRef` read/write it; `getCurrentBranch` resolves the branch via `git branch --show-current`. Unset or detached HEAD falls back to `DEFAULT_BASE` (`main`). This makes stacked branches work: each branch remembers its own parent (e.g. `feature-b` → `feature-a`), and since `compute()` re-reads the branch + base on every refresh, checking out a different branch auto-repoints the view.
+  - The base-branch picker (`lightGit.selectBaseBranch`, git-branch icon in the view header) lists local branches via `git branch` (same suggest as `compareWithRevision`) and allows free-form ref input (so remote refs like `origin/main` can still be typed); the choice is written to git config for the *current* branch only
+  - The current base is shown live in the view header via `view.description` (e.g. "vs feature-a")
 
 ### Important Implementation Details
 - All git operations are async and use `execAsync` (promisified exec)

@@ -433,6 +433,34 @@ class MergeBaseDecorationProvider implements vscode.FileDecorationProvider {
     }
 }
 
+const DEFAULT_BASE = 'main';
+
+async function getCurrentBranch(cwd: string): Promise<string> {
+    try {
+        const { stdout } = await execAsync('git branch --show-current', { cwd });
+        return stdout.trim(); // '' when detached HEAD
+    } catch {
+        return '';
+    }
+}
+
+async function getBaseRef(cwd: string, branch: string): Promise<string> {
+    if (branch) {
+        try {
+            const { stdout } = await execAsync(`git config --get branch."${branch}".lightgitbase`, { cwd });
+            const v = stdout.trim();
+            if (v) return v;
+        } catch {
+            // unset → non-zero exit
+        }
+    }
+    return DEFAULT_BASE;
+}
+
+async function setBaseRef(cwd: string, branch: string, base: string): Promise<void> {
+    await execAsync(`git config branch."${branch}".lightgitbase "${base}"`, { cwd });
+}
+
 class MergeBaseChangesProvider implements vscode.TreeDataProvider<TreeNode> {
     private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | void>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -440,6 +468,7 @@ class MergeBaseChangesProvider implements vscode.TreeDataProvider<TreeNode> {
     private root: FolderNode | undefined;
     private view: vscode.TreeView<TreeNode> | undefined;
     mergeBaseHash: string | undefined;
+    baseRef: string = DEFAULT_BASE;
 
     constructor(private readonly decorations: MergeBaseDecorationProvider) {}
 
@@ -456,26 +485,35 @@ class MergeBaseChangesProvider implements vscode.TreeDataProvider<TreeNode> {
         if (this.view) this.view.message = msg;
     }
 
+    private setDescription(desc: string | undefined) {
+        if (this.view) this.view.description = desc;
+    }
+
     private async compute(): Promise<void> {
         const folders = vscode.workspace.workspaceFolders;
         if (!folders || folders.length === 0) {
             this.root = undefined;
             this.mergeBaseHash = undefined;
             this.decorations.update(new Map());
+            this.setDescription(undefined);
             this.setMessage('No workspace folder open.');
             return;
         }
         const cwd = folders[0].uri.fsPath;
 
+        const branch = await getCurrentBranch(cwd);
+        this.baseRef = await getBaseRef(cwd, branch);
+        this.setDescription(`vs ${this.baseRef}`);
+
         let mergeBase: string;
         try {
-            const { stdout } = await execAsync('git merge-base HEAD main', { cwd });
+            const { stdout } = await execAsync(`git merge-base HEAD ${this.baseRef}`, { cwd });
             mergeBase = stdout.trim();
         } catch {
             this.root = undefined;
             this.mergeBaseHash = undefined;
             this.decorations.update(new Map());
-            this.setMessage('Not a git repository, or no merge-base with main.');
+            this.setMessage(`Not a git repository, or no merge-base with ${this.baseRef}.`);
             return;
         }
         this.mergeBaseHash = mergeBase;
@@ -497,7 +535,7 @@ class MergeBaseChangesProvider implements vscode.TreeDataProvider<TreeNode> {
         if (entries.length === 0) {
             this.root = undefined;
             this.decorations.update(new Map());
-            this.setMessage('No files changed vs main.');
+            this.setMessage(`No files changed vs ${this.baseRef}.`);
             return;
         }
 
@@ -590,6 +628,79 @@ async function openMergeBaseDiff(absolutePath: string, mergeBaseHash: string, st
     }
 
     await openDiffView(oldUri, newUri, title, workspaceFolder);
+}
+
+async function pickBaseRef(branches: string[], current: string, branch: string): Promise<string | undefined> {
+    const items: vscode.QuickPickItem[] = branches.map(b => ({
+        label: b,
+        description: b === current ? 'current base' : undefined,
+    }));
+
+    const quickPick = vscode.window.createQuickPick();
+    quickPick.items = items;
+    quickPick.placeholder = `Select base branch for ${branch} (or type any ref)`;
+    quickPick.canSelectMany = false;
+
+    return new Promise<string | undefined>((resolve) => {
+        quickPick.onDidAccept(() => {
+            const selected = quickPick.selectedItems[0];
+            if (selected) {
+                resolve(selected.label);
+            } else if (quickPick.value) {
+                resolve(quickPick.value.trim());
+            } else {
+                resolve(undefined);
+            }
+            quickPick.dispose();
+        });
+
+        quickPick.onDidHide(() => {
+            resolve(undefined);
+            quickPick.dispose();
+        });
+
+        quickPick.show();
+    });
+}
+
+async function selectBaseBranch(provider: MergeBaseChangesProvider) {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        vscode.window.showErrorMessage('No workspace folder open');
+        return;
+    }
+    const cwd = folders[0].uri.fsPath;
+
+    const branch = await getCurrentBranch(cwd);
+    if (!branch) {
+        vscode.window.showInformationMessage('Detached HEAD — no branch to attach a base to.');
+        return;
+    }
+
+    let branches: string[];
+    try {
+        const { stdout } = await execAsync(
+            `git branch --format='%(refname:short)' --sort=-committerdate`,
+            { cwd }
+        );
+        branches = stdout.split('\n').map(s => s.trim())
+            .filter(b => b && b !== branch);
+    } catch (error) {
+        vscode.window.showErrorMessage(`${error}`);
+        return;
+    }
+
+    const current = await getBaseRef(cwd, branch);
+    const picked = await pickBaseRef(branches, current, branch);
+    if (!picked) return;
+
+    try {
+        await setBaseRef(cwd, branch, picked);
+    } catch (error) {
+        vscode.window.showErrorMessage(`${error}`);
+        return;
+    }
+    await provider.refresh();
 }
 
 async function getGitAPI(): Promise<GitAPI | undefined> {
@@ -1076,6 +1187,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('lightGit.openMergeBaseDiff', openMergeBaseDiff),
         vscode.commands.registerCommand('lightGit.openChangedFile', openChangedFile),
         vscode.commands.registerCommand('lightGit.refreshMergeBaseChanges', () => provider.refresh()),
+        vscode.commands.registerCommand('lightGit.selectBaseBranch', () => selectBaseBranch(provider)),
         vscode.commands.registerCommand('lightGit.showSelectionHistory', () => showSelectionHistory(selectionProvider)),
         vscode.commands.registerCommand('lightGit.refreshSelectionHistory', () => selectionProvider.refresh()),
         vscode.commands.registerCommand('lightGit.openSelectionCommitDiff', (c: SelectionCommit) => openSelectionCommitDiff(diffProvider, c)),

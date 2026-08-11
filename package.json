@@ -2,7 +2,7 @@
   "name": "vscode-light-git",
   "displayName": "Light Git",
   "description": "Lightweight git tools for file comparison and remote links",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "publisher": "kswaldemar",
   "engines": {
     "vscode": "^1.74.0"
@@ -48,6 +48,12 @@
         "title": "Refresh",
         "category": "Light Git",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "lightGit.selectBaseBranch",
+        "title": "Select Base Branch",
+        "category": "Light Git",
+        "icon": "$(git-branch)"
       },
       {
         "command": "lightGit.openChangedFile",
@@ -117,7 +123,7 @@
       "scm": [
         {
           "id": "lightGit.mergeBaseChanges",
-          "name": "Branch Changes (vs main)",
+          "name": "Branch Changes",
           "icon": "$(git-pull-request)",
           "contextualTitle": "Light Git"
         },
@@ -132,9 +138,14 @@
     "menus": {
       "view/title": [
         {
+          "command": "lightGit.selectBaseBranch",
+          "when": "view == lightGit.mergeBaseChanges",
+          "group": "navigation@1"
+        },
+        {
           "command": "lightGit.refreshMergeBaseChanges",
           "when": "view == lightGit.mergeBaseChanges",
-          "group": "navigation"
+          "group": "navigation@2"
         },
         {
           "command": "lightGit.refreshSelectionHistory",
